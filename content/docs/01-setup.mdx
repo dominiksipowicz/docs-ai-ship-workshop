@@ -11,6 +11,11 @@ import { Step, Steps } from "fumadocs-ui/components/steps";
 
     https://v0.app/templates/ai-ship-workshop-tyVvKQthD7X
 
+    > **Note:**  
+    > Ensure that Vercel integrations are properly connected within v0. This is essential for synchronizing environment variables, which will be required for local development and integrations such as:
+    > - AI Gateway
+    > - Redis
+
   </Step>
   <Step>
     Deploy project from v0 to Vercel and verify deployment from v0
@@ -20,12 +25,21 @@ import { Step, Steps } from "fumadocs-ui/components/steps";
     Clone GitHub repository to your local machine
   </Step>
   <Step>
-    Run `pnpm install` to install dependencies
+    Install dependencies
+    ```bash
+    pnpm install
+    ```
   </Step>
   <Step>
-    Run `vercel link` to link your local project to vercel project
+    Link your local project to vercel project
+    ```bash
+    verel link
+    ```
   </Step>
   <Step>
-    Set up environment variables with `vercel env pull`
+    Set up environment variables
+    ```bash
+    vercel env pull
+    ```
   </Step>
 </Steps>

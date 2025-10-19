@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.2.0/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.2.6/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -13,14 +13,15 @@
       "!.next",
       "!dist",
       "!build",
-      "!.source"
-    ],
-    "ignore": ["content/docs/04-create-brand-context.mdx"]
+      "!.source",
+      "!**/*.mdx"
+    ]
   },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
-    "indentWidth": 2
+    "indentWidth": 2,
+    "lineWidth": 200
   },
   "linter": {
     "enabled": true,

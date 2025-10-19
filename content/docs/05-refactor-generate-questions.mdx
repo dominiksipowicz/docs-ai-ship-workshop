@@ -1,0 +1,174 @@
+---
+title: Refactoring API path /generate-questions
+---
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+
+<Steps>
+
+<Step>
+Let's create a schema for question generation. We want exactly 3 questions with IDs and question text.
+
+```ts title="app/api/generate-questions/route.ts"
+import { type NextRequest, NextResponse } from "next/server";
+import { generateText } from "ai"; // [!code --]
+import { Experimental_Agent as Agent, Output, tool, stepCountIs } from "ai"; // [!code ++]
+import { z } from "zod"; // [!code ++]
+import { redis, type Question } from "@/lib/upstash"; // [!code ++]
+
+// Schema for questions // [!code ++]
+const questionsSchema = z.object({ // [!code ++]
+  questions: z // [!code ++]
+    .array( // [!code ++]
+      z.object({ // [!code ++]
+        id: z.string().describe("Question ID (Q1, Q2, Q3)"), // [!code ++]
+        question: z.string().describe("The natural question users would ask"), // [!code ++]
+      }) // [!code ++]
+    ) // [!code ++]
+    .length(3) // [!code ++]
+    .describe("Exactly 3 natural questions"), // [!code ++]
+}); // [!code ++]
+```
+
+</Step>
+
+<Step>
+Create a validation tool to ensure generated questions don't contain the brand name. This tool will be used by the Agent to self-validate its output.
+
+```ts title="app/api/generate-questions/route.ts"
+const { brand, context } = contextData as any;
+
+// Create validation tool to check for brand mentions // [!code ++]
+const validateQuestions = tool({ // [!code ++]
+  description: `Validate that the generated questions do not contain the brand name "${brand}". If brand name is found, return validation failure so new questions can be generated.`, // [!code ++]
+  inputSchema: z.object({ // [!code ++]
+    questions: z.array( // [!code ++]
+      z.object({ // [!code ++]
+        id: z.string(), // [!code ++]
+        question: z.string(), // [!code ++]
+      }) // [!code ++]
+    ), // [!code ++]
+  }), // [!code ++]
+  execute: async ({ // [!code ++]
+    questions, // [!code ++]
+  }: { // [!code ++]
+    questions: Array<{ id: string; question: string }>; // [!code ++]
+  }) => { // [!code ++]
+    const brandLower = brand.toLowerCase(); // [!code ++]
+    const invalidQuestions = questions.filter((q) => // [!code ++]
+      q.question.toLowerCase().includes(brandLower) // [!code ++]
+    ); // [!code ++]
+ // [!code ++]
+    if (invalidQuestions.length > 0) { // [!code ++]
+      console.log( // [!code ++]
+        `[v0] Brand validation failed - found "${brand}" in questions:`, // [!code ++]
+        invalidQuestions.map((q) => q.id).join(", ") // [!code ++]
+      ); // [!code ++]
+      return { // [!code ++]
+        valid: false, // [!code ++]
+        message: `Brand name "${brand}" found in questions: ${invalidQuestions // [!code ++]
+          .map((q) => q.id) // [!code ++]
+          .join( // [!code ++]
+            ", " // [!code ++]
+          )}. You MUST regenerate these questions WITHOUT the brand name.`, // [!code ++]
+        invalidQuestionIds: invalidQuestions.map((q) => q.id), // [!code ++]
+      }; // [!code ++]
+    } // [!code ++]
+ // [!code ++]
+    console.log("[v0] Brand validation passed - no brand mentions found"); // [!code ++]
+    return { // [!code ++]
+      valid: true, // [!code ++]
+      message: "All questions are valid - no brand mentions detected.", // [!code ++]
+    }; // [!code ++]
+  }, // [!code ++]
+}); // [!code ++]
+```
+
+</Step>
+
+<Step>
+Now refactor the implementation to use the Agent class with the validation tool and structured output. The Agent will automatically retry if validation fails.
+
+```ts title="app/api/generate-questions/route.ts"
+
+const { text } = await generateText({ // [!code --]
+  model: "openai/gpt-4o-mini", // [!code --]
+  prompt: `You are an expert at ... Return ONLY the JSON array, no other text.`, // [!code --]
+}); // [!code --]
+
+// Create an Agent with validation tool // [!code ++]
+const questionAgent = new Agent({ // [!code ++]
+  model: "openai/gpt-4o-mini", // [!code ++]
+  system: `You are an expert at creating natural, AEO-optimized questions that users would ask AI assistants. // [!code ++]
+ // [!code ++]
+CRITICAL RULES: // [!code ++]
+1. You must NEVER mention the brand name "${brand}" in any of the questions // [!code ++]
+2. Users don't know the brand yet and are asking to discover solutions // [!code ++]
+3. After generating questions, you MUST use the validateQuestions tool to verify no brand mentions // [!code ++]
+4. If validation fails, you MUST regenerate the questions that contain the brand name // [!code ++]
+5. Generate exactly 3 questions with IDs: Q1, Q2, Q3`, // [!code ++]
+  tools: { // [!code ++]
+    validateQuestions, // [!code ++]
+  }, // [!code ++]
+  experimental_output: Output.object({ // [!code ++]
+    schema: questionsSchema, // [!code ++]
+  }), // [!code ++]
+  stopWhen: stepCountIs(3), // [!code ++]
+}); // [!code ++]
+
+// Generate questions using the agent // [!code ++]
+const { experimental_output: questionsData } = await questionAgent.generate( // [!code ++]
+  { // [!code ++]
+    prompt: `Given this brand context:
+${context}
+ 
+Generate exactly 3 natural questions that users would realistically ask AI assistants when looking for solutions in this space.
+
+Requirements: 
+- DO NOT USE the brand name "${brand}" anywhere in the questions
+- Users are asking to discover solutions, prices, or providers
+- Questions should be natural and conversational
+- Questions should be the type users would ask when seeking recommendations
+- Questions should be relevant to the offerings described
+- Use Q1, Q2, Q3 as IDs
+
+After generating the questions, you MUST call the validateQuestions tool to verify they don't contain the brand name.`,
+}); // [!code ++]
+```
+
+</Step>
+
+<Step>
+Update variable references to use the structured output directly instead of parsing JSON.
+
+```ts title="app/api/generate-questions/route.ts"
+const questions = JSON.parse(text.trim()); // [!code --]
+
+// Store questions in Upstash - matches Question[] type // [!code ++]
+const questions: Question[] = questionsData.questions; // [!code ++]
+await redis.set(`${runId}:questions`, JSON.stringify(questions));
+
+return NextResponse.json({
+  success: true,
+  questions, // [!code --]
+  questions: questionsData.questions, // [!code ++]
+});
+```
+
+</Step>
+
+<Step>
+Run and test your app on localhost.
+
+```bash
+pnpm dev
+```
+
+Open http://localhost:3000 in your browser, enter a brand name, and verify that:
+- Questions are generated without the brand name
+- The validation tool is working (check console logs)
+- Questions are natural and relevant
+
+</Step>
+
+</Steps>

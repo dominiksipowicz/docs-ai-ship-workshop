@@ -1,5 +1,7 @@
 {
-  "files.associations": {
-    "**/content/docs/04-create-brand-context.mdx": "plaintext"
+  "editor.defaultFormatter": "biomejs.biome",
+  "[mdx]": {
+    "editor.formatOnSave": false,
+    "editor.defaultFormatter": null
   }
 }

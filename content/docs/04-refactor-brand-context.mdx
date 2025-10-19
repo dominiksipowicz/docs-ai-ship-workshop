@@ -1,0 +1,79 @@
+---
+title: Refactoring API path /create-brand-context
+---
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+
+<Steps>
+
+<Step>
+Let's start by creating schema for our brand context. It's not a hard schema so it can be very simple JSON object. However the better context we will give to the LLM the better the job it will perform.
+
+```ts title="app/api/create-brand-context/route.ts"
+import { type NextRequest, NextResponse } from "next/server";
+import { generateText } from "ai";
+import { redis } from "@/lib/upstash";
+import { z } from "zod"; // [!code ++]
+
+// Schema for brand context // [!code ++]
+const brandContextSchema = z.object({ // [!code ++]
+  description: z.string().describe("What the brand/product is"), // [!code ++]
+  keyFeatures: z.array(z.string()).describe("Key features and offerings"), // [!code ++]
+  targetAudience: z.string().describe("Target audience"), // [!code ++]
+  industry: z.string().describe("Industry and category"), // [!code ++]
+  valuePropositions: z.array(z.string()).describe("Unique value propositions"), // [!code ++]
+  comprehensiveSummary: z // [!code ++]
+    .string() // [!code ++]
+    .describe("A comprehensive paragraph summary for generating questions"), // [!code ++]
+}); // [!code ++]]
+```
+
+</Step>
+
+<Step>
+Next, update the implementation to utilize the Agent class instead of the traditional `generateText()` method. 
+In this approach, we will also leverage a system prompt to guide the agent, structuring the prompt for enhanced clarity and effectiveness.
+
+
+```ts title="app/api/create-brand-context/route.ts"
+
+const { text } = await generateText({  // [!code --]
+  model: "openai/gpt-4o-mini", // [!code --]
+  prompt: `You are an expert ...`, // [!code --]
+})  // [!code --]
+// Create Agent for brand context generation // [!code ++]
+const brandContextAgent = new Agent({ // [!code ++]
+  model: "openai/gpt-4o-mini", // [!code ++]
+  system: // [!code ++]
+    "You are an expert at creating comprehensive brand context for AI visibility testing. Analyze brands and products to provide detailed, structured information.", // [!code ++]
+  experimental_output: Output.object({ // [!code ++]
+    schema: brandContextSchema, // [!code ++]
+  }), // [!code ++]
+}); // [!code ++]
+
+// Generate master context using AI with structured output // [!code ++]
+const { experimental_output: brandContext } = // [!code ++]
+  await brandContextAgent.generate({ // [!code ++]
+    prompt: `Analyze this brand/product: "${brand}". Provide comprehensive information that will be used to generate natural questions users might ask AI assistants.`, // [!code ++]
+  }); // [!code ++]
+
+```
+</Step>
+
+<Step>
+  Please remember to change any variable names after refactoring for example in above example we changed `text` to `brandContext.comprehensiveSummary`.
+</Step>
+
+<Step>
+  Run and test your app on localhost.
+
+  ```bash
+  pnpm dev
+  ```
+
+  Open http://localhost:3000 in your browser and test the app.
+
+</Step>
+
+
+</Steps>

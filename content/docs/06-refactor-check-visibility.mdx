@@ -1,0 +1,144 @@
+---
+title: Refactoring API path /check-visibility
+---
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+
+<Steps>
+
+<Step>
+Let's create a schema for brand detection. We need to detect if a brand is mentioned and track its position among other brands.
+
+```ts title="app/api/check-visibility/route.ts"
+import { type NextRequest, NextResponse } from "next/server";
+import { generateText } from "ai"; // [!code --]
+import { Experimental_Agent as Agent, generateText, Output } from "ai"; // [!code ++]
+import { z } from "zod"; // [!code ++]
+import { redis } from "@/lib/upstash";
+import { redis, type VisibilityAnswer } from "@/lib/upstash"; // [!code ++]
+
+// Schema for brand detection // [!code ++]
+const brandDetectionSchema = z.object({ // [!code ++]
+  isVisible: z // [!code ++]
+    .boolean() // [!code ++]
+    .describe("Whether the brand is mentioned in the answer"), // [!code ++]
+  position: z // [!code ++]
+    .number() // [!code ++]
+    .nullable() // [!code ++]
+    .describe( // [!code ++]
+      "Position of the brand mention among other brands (1-10), or null if not mentioned or only one" // [!code ++]
+    ), // [!code ++]
+}); // [!code ++]
+```
+
+</Step>
+
+<Step>
+Now refactor the brand detection logic to use the Agent class with structured output. This replaces the manual JSON parsing and fallback logic.
+
+```ts title="app/api/check-visibility/route.ts"
+
+// Step 1: Get answer from the target model using AI Gateway // [!code ++]
+const { text: answer } = await generateText({
+  model: model,
+  prompt: question,
+});
+
+console.log(`[v0] Got answer from ${model}:`, answer.substring(0, 100));
+
+const detectionPrompt = `Given this answer from an AI model ...`; // [!code --]
+
+const { text: detectionResult } = await generateText({ // [!code --]
+  model: "openai/gpt-4o-mini", // [!code --]
+  prompt: detectionPrompt, // [!code --]
+}); // [!code --]
+
+console.log(`[v0] Detection result:`, detectionResult); // [!code --]
+
+let detection; // [!code --]
+try { // [!code --]
+  const cleanedResult = detectionResult // [!code --]
+    .replace(/```json\n?/g, "") // [!code --]
+    .replace(/```\n?/g, "") // [!code --]
+    .trim(); // [!code --]
+  detection = JSON.parse(cleanedResult); // [!code --]
+} catch (parseError) { // [!code --]
+  console.error("[v0] Failed to parse detection result:", parseError); // [!code --]
+  // Fallback to simple string matching // [!code --]
+  detection = { // [!code --]
+    isVisible: answer.toLowerCase().includes(brand.toLowerCase()), // [!code --]
+    position: null, // [!code --]
+  }; // [!code --]
+} // [!code --]
+
+// Step 2: Use Agent for brand detection with structured output // [!code ++]
+const detectionAgent = new Agent({ // [!code ++]
+  model: "openai/gpt-4o-mini", // [!code ++]
+  system: `You are an expert at analyzing AI responses to detect brand mentions and positioning.
+Your task is to carefully analyze answers and determine:
+1. Whether a specific brand is mentioned
+2. If mentioned, what position it holds among other brands/products`,
+  experimental_output: Output.object({ // [!code ++]
+    schema: brandDetectionSchema, // [!code ++]
+  }), // [!code ++]
+}); // [!code ++]
+
+// Generate detection result using the agent // [!code ++]
+const { experimental_output: detection } = await detectionAgent.generate({ // [!code ++]
+  prompt: `Analyze this AI-generated answer to determine if the brand "${brand}" is mentioned.
+
+Answer to analyze:
+"${answer}"
+
+Determine:
+1. Is the brand "${brand}" explicitly mentioned in the answer?
+2. If yes, what position is it mentioned among other brands/products? (1 = first mentioned, 2 = second, etc., or null if not mentioned or if it's the only one)`,
+}); // [!code ++]
+
+console.log(`[v0] Detection result:`, detection); // [!code ++]
+```
+
+</Step>
+
+<Step>
+Update variable references to use the structured output. The Agent returns typed data directly, no JSON parsing needed.
+
+```ts title="app/api/check-visibility/route.ts"
+// Matches VisibilityAnswer type // [!code ++]
+const answerData: VisibilityAnswer = {// [!code ++]
+  questionId,
+  model,
+  run,
+  answer,
+  mentioned: detection.isVisible,
+  position: detection.position,
+  timestamp: Date.now(),
+  failed: false,
+};
+```
+
+The key improvements:
+- No more JSON parsing errors
+- No fallback logic needed
+- Structured output is type-safe
+- More reliable brand detection
+
+</Step>
+
+<Step>
+Run and test your app on localhost.
+
+```bash
+pnpm dev
+```
+
+Open http://localhost:3000 in your browser, run a visibility check, and verify that:
+- Brand detection works correctly
+- Position tracking is accurate
+- No JSON parsing errors occur
+- Results are stored properly in Redis
+
+</Step>
+
+</Steps>
+
