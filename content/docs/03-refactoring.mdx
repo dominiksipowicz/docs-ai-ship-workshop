@@ -1,0 +1,30 @@
+---
+title: use the Agent class
+description: Refactoring the AI Visibility Checker Agent into new AI SDK features like Agent class, structured outputs, and more.
+---
+
+In this section, we’ll refactor the existing app’s three API routes responsible for generating the brand context, creating questions, and checking AI visibility for a given query.
+
+## Why refactor into Agent class?
+
+AI applications present unique challenges that traditional web applications don't face. They can run for extended periods of time, making them unpredictable in terms of execution duration. Additionally, they are prone to errors, which means we need robust handling for retries and fallbacks to ensure reliability.
+
+Refactoring into the [Agent class](https://ai-sdk.dev/docs/agents/overview#agent-class) makes it easier to implement these error handling patterns and also provides a clearer path for migrating to Vercel Sandbox or adopting more sophisticated agentic workflows in the future.
+
+## The Agent
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+
+The Agent is only 3 steps.
+
+import { File, Folder, Files } from "fumadocs-ui/components/files";
+
+<Files>
+  <Folder name="app" defaultOpen>
+    <Folder name="api" defaultOpen>
+      <File name="create-brand-context" />
+      <File name="generate-questions" />
+      <File name="check-visibility" />
+    </Folder>
+  </Folder>
+</Files>
