@@ -1,0 +1,360 @@
+---
+title: Vercel Sandbox Integration (Stretch Goal)
+---
+
+import { Step, Steps } from "fumadocs-ui/components/steps";
+
+<Steps>
+
+<Step>
+Install the Vercel Sandbox SDK and required dependencies.
+
+```bash
+pnpm add @vercel/sandbox ms
+pnpm add -D @types/ms
+```
+
+[Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) is a secure, isolated environment for executing code. Perfect for AI agent workflows that need to run in isolation with specific resources and timeouts.
+
+</Step>
+
+<Step>
+Create the Sandbox API endpoint at `app/api/full-flow-agent/route.ts`. This endpoint will create a sandbox, clone the repository, install dependencies, and execute the CLI script.
+
+```ts title="app/api/full-flow-agent/route.ts"
+import { NextResponse } from "next/server";
+import { Sandbox } from "@vercel/sandbox";
+import ms from "ms";
+
+export async function POST(request: Request) {
+  try {
+    const { brand, runId } = await request.json();
+
+    if (!brand) {
+      return NextResponse.json(
+        { error: "Missing brand parameter" },
+        { status: 400 }
+      );
+    }
+
+    // Generate runId if not provided
+    const workflowRunId =
+      runId || `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    console.log(
+      `[Sandbox] Starting sandbox for brand: ${brand}, runId: ${workflowRunId}`
+    );
+
+    // Create sandbox with the GitHub repository
+    const sandbox = await Sandbox.create({
+      source: {
+        url: "https://github.com/{YOUR_GITHUB_NAME}/v0-ai-ship-workshop",
+        type: "git",
+      },
+      resources: { vcpus: 4 },
+      timeout: ms("10m"), // 10 minute timeout
+      runtime: "node22",
+    });
+
+    console.log(`[Sandbox] Created sandbox`);
+```
+
+</Step>
+
+<Step>
+Install dependencies in the sandbox. Pass all required environment variables so the CLI script can access Redis and AI services.
+
+```ts title="app/api/full-flow-agent/route.ts"
+    // Step 1: Install dependencies
+    console.log(`[Sandbox] Installing dependencies...`);
+    const install = await sandbox.runCommand({
+      cmd: "pnpm",
+      args: ["install"],
+      env: {
+        AI_GATEWAY_API_KEY: process.env.AI_GATEWAY_API_KEY || "",
+        KV_REST_API_READ_ONLY_TOKEN:
+          process.env.KV_REST_API_READ_ONLY_TOKEN || "",
+        KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN || "",
+        KV_REST_API_URL: process.env.KV_REST_API_URL || "",
+        KV_URL: process.env.KV_URL || "",
+        REDIS_URL: process.env.REDIS_URL || "",
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || "",
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || "",
+      },
+    });
+
+    if (install.exitCode !== 0) {
+      console.error(`[Sandbox] Failed to install dependencies`);
+      await sandbox.stop();
+      return NextResponse.json(
+        {
+          error: "Failed to install dependencies",
+          exitCode: install.exitCode,
+          stderr: install.stderr,
+        },
+        { status: 500 }
+      );
+    }
+
+    console.log(`[Sandbox] Dependencies installed successfully`);
+```
+
+</Step>
+
+<Step>
+Execute the CLI script in detached mode (fire and forget). This allows the API to return immediately while the agent flow runs in the background.
+
+```ts title="app/api/full-flow-agent/route.ts"
+    // Step 2: Run the full agent flow (fire and forget - detached mode)
+    console.log(
+      `[Sandbox] Starting full-agent-flow for brand: ${brand}, runId: ${workflowRunId}`
+    );
+
+    // Run command in detached mode - don't wait for completion
+    await sandbox.runCommand({
+      cmd: "pnpm",
+      args: ["full-agent-flow", brand, workflowRunId],
+      detached: true, // Fire and forget
+      env: {
+        AI_GATEWAY_API_KEY: process.env.AI_GATEWAY_API_KEY || "",
+        KV_REST_API_READ_ONLY_TOKEN:
+          process.env.KV_REST_API_READ_ONLY_TOKEN || "",
+        KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN || "",
+        KV_REST_API_URL: process.env.KV_REST_API_URL || "",
+        KV_URL: process.env.KV_URL || "",
+        REDIS_URL: process.env.REDIS_URL || "",
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || "",
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || "",
+      },
+    });
+
+    console.log(`[Sandbox] Command started in detached mode`);
+    console.log(
+      `[Sandbox] Sandbox will run until completion or timeout (10 minutes)`
+    );
+
+    // Return immediately without stopping the sandbox
+    return NextResponse.json({
+      success: true,
+      message: "Full agent flow started in sandbox",
+      runId: workflowRunId,
+      brand,
+      sandboxId: sandbox.sandboxId,
+      note: "Command is running in background. Check results in Redis with the runId. Monitor sandbox in Vercel Dashboard > Observability > Sandboxes.",
+    });
+  } catch (error) {
+    console.error("[Sandbox] Error running full flow agent:", error);
+    return NextResponse.json(
+      {
+        error: "Failed to run full flow agent",
+        message: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 }
+    );
+  }
+}
+```
+
+Key features:
+- **Detached mode**: API returns immediately, sandbox runs in background
+- **10-minute timeout**: Plenty of time for 27 checks to complete
+- **4 vCPUs**: Adequate resources for parallel execution
+- **Automatic cleanup**: Sandbox stops after completion or timeout
+
+</Step>
+
+<Step>
+Update the frontend to use the Sandbox endpoint. This simplifies the client code significantly - one API call instead of orchestrating three.
+
+```tsx title="app/page.tsx"
+// Main Agent workflow using Vercel Sandbox // [!code ++]
+const startAgent = async () => {
+  if (!brand.trim()) {
+    setError("Please enter a brand name");
+    return;
+  }
+
+  setError("");
+  setIsRunning(true);
+  setResults(null);
+  startPolling();
+
+  const newRunId = `run_${Date.now()}_${Math.random()
+    .toString(36)
+    .substr(2, 9)}`;
+  setRunId(newRunId);
+
+  try {
+    // Step 1: Create brand context // [!code --]
+    const contextResponse = await fetch("/api/create-brand-context", { // [!code --]
+      method: "POST", // [!code --]
+      headers: { "Content-Type": "application/json" }, // [!code --]
+      body: JSON.stringify({ runId: newRunId, brand }), // [!code --]
+    }); // [!code --]
+ // [!code --]
+    if (!contextResponse.ok) throw new Error("Failed to create context"); // [!code --]
+ // [!code --]
+    // Step 2: Generate questions // [!code --]
+    const questionsResponse = await fetch("/api/generate-questions", { // [!code --]
+      method: "POST", // [!code --]
+      headers: { "Content-Type": "application/json" }, // [!code --]
+      body: JSON.stringify({ runId: newRunId }), // [!code --]
+    }); // [!code --]
+ // [!code --]
+    if (!questionsResponse.ok) // [!code --]
+      throw new Error("Failed to generate questions"); // [!code --]
+    const { questions } = await questionsResponse.json(); // [!code --]
+ // [!code --]
+    // Step 3: Check visibility across all models (27 parallel calls) // [!code --]
+    const totalChecks = questions.length * MODELS.length * 3; // [!code --]
+    console.log(`[v0] Starting ${totalChecks} visibility checks in parallel`); // [!code --]
+ // [!code --]
+    for (const question of questions) { // [!code --]
+      for (const model of MODELS) { // [!code --]
+        for (let run = 1; run <= 3; run++) { // [!code --]
+          fetch("/api/check-visibility", { // [!code --]
+            method: "POST", // [!code --]
+            headers: { "Content-Type": "application/json" }, // [!code --]
+            body: JSON.stringify({ // [!code --]
+              runId: newRunId, // [!code --]
+              questionId: question.id, // [!code --]
+              question: question.question, // [!code --]
+              model: model.id, // [!code --]
+              run, // [!code --]
+              brand, // [!code --]
+            }), // [!code --]
+          }).catch((err) => { // [!code --]
+            console.error( // [!code --]
+              `[v0] Error checking visibility for ${model.id}, run ${run}:`, // [!code --]
+              err // [!code --]
+            ); // [!code --]
+          }); // [!code --]
+        } // [!code --]
+      } // [!code --]
+    } // [!code --]
+ // [!code --]
+    console.log( // [!code --]
+      `[v0] All visibility checks initiated. Results will appear as they complete.` // [!code --]
+    ); // [!code --]
+
+    // Start the full agent flow in Vercel Sandbox (fire and forget) // [!code ++]
+    const response = await fetch("/api/full-flow-agent", { // [!code ++]
+      method: "POST", // [!code ++]
+      headers: { "Content-Type": "application/json" }, // [!code ++]
+      body: JSON.stringify({ brand, runId: newRunId }), // [!code ++]
+    }); // [!code ++]
+ // [!code ++]
+    if (!response.ok) { // [!code ++]
+      const errorData = await response.json(); // [!code ++]
+      throw new Error(errorData.error || "Failed to start agent flow"); // [!code ++]
+    } // [!code ++]
+ // [!code ++]
+    const result = await response.json(); // [!code ++]
+ // [!code ++]
+    console.log( // [!code ++]
+      `[v0] Sandbox started (ID: ${result.sandboxId}). Agent flow running in background.` // [!code ++]
+    ); // [!code ++]
+    console.log( // [!code ++]
+      `[v0] Results will stream to Redis and appear here as they complete.` // [!code ++]
+    ); // [!code ++]
+    console.log( // [!code ++]
+      `[v0] Expected completion: 5-10 minutes for 27 visibility checks.` // [!code ++]
+    ); // [!code ++]
+  } catch (err) {
+    console.error("[v0] Error in workflow:", err); // [!code --]
+    console.error("[v0] Error starting agent flow:", err); // [!code ++]
+    setError(err instanceof Error ? err.message : "An error occurred");
+    setIsRunning(false); // [!code ++]
+    stopPolling();
+  }
+};
+```
+
+</Step>
+
+<Step>
+Update the button text to reflect Sandbox execution:
+
+```tsx title="app/page.tsx"
+<Button onClick={startAgent} disabled={isRunning} size="lg" className="w-full">
+  {isRunning ? (
+    <>
+      <LoaderIcon className="size-4 mr-2 animate-spin" />
+      Running Agent... // [!code --]
+      Running in Sandbox... // [!code ++]
+    </>
+  ) : (
+    "Start Agent to check AI Visibility" // [!code --]
+    "Start Sandbox Agent to check AI Visibility" // [!code ++]
+  )}
+</Button>
+```
+
+</Step>
+
+<Step>
+Test locally with OIDC token. Vercel Sandbox requires authentication, so you need to pull environment variables including the OIDC token:
+
+```bash
+vercel env pull
+```
+
+This creates a `.env.local` file with all environment variables including the `OIDC_TOKEN` needed for Sandbox authentication.
+
+Then run your app:
+
+```bash
+pnpm dev
+```
+
+Test the Sandbox endpoint by entering a brand name and clicking "Start Sandbox Agent".
+
+</Step>
+
+<Step>
+Deploy to Vercel and monitor sandboxes:
+
+```bash
+vercel deploy --prod
+```
+
+After deployment, you can monitor your sandboxes in the Vercel Dashboard:
+1. Go to your project in Vercel Dashboard
+2. Navigate to **Observability** > **Sandboxes**
+3. View running sandboxes, logs, and resource usage
+
+Benefits of Vercel Sandbox:
+- **Isolation**: Each run gets its own isolated environment
+- **Security**: Code runs in a secure sandbox
+- **Scalability**: Can run multiple sandboxes in parallel
+- **Monitoring**: Full observability through Vercel Dashboard
+- **Resources**: Configurable CPU and memory allocation
+- **Timeout protection**: Automatic cleanup after timeout
+
+</Step>
+
+</Steps>
+
+## Why Use Vercel Sandbox?
+
+The Sandbox approach offers several advantages over the three-API-route approach:
+
+### Before (3 API Routes):
+- Client orchestrates workflow
+- Network overhead for each call
+- Complex error handling on client
+- Limited execution time (Serverless Function limits)
+
+### After (Vercel Sandbox):
+- Server orchestrates workflow
+- Single API call from client
+- Robust server-side error handling
+- Extended execution time (10 minutes)
+- Better for complex, long-running agent workflows
+- Foundation for advanced agentic systems
+- Agent can implement multiple retries and complex strategies without time limit concerns
+- Fully fire-and-forget architecture enables triggering from external sources (Slack messages, CRM systems, webhook events)
+- No human-in-the-loop required - agent executes autonomously once triggered
+
+This is ideal for production AI agent applications that need reliability, isolation, and observability.
+
